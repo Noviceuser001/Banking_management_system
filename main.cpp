@@ -328,7 +328,7 @@ class Bank {
     std::optional<int> registerCustomer(const std::string& name, const std::string& email, const std::string& phone,
                                         const std::string& pin, const std::string& accountType,
                                         double initialDeposit) {
-        if (pin.empty() || initialDeposit < 0.0) {
+        if (name.empty() || email.empty() || phone.empty() || pin.empty() || initialDeposit < 0.0) {
             return std::nullopt;
         }
 
@@ -475,10 +475,14 @@ class Bank {
         }
 
         if (numeric) {
-            const int id = std::stoi(query);
-            auto account = findAccountById(id);
-            if (account) {
-                result.push_back(account);
+            try {
+                const int id = std::stoi(query);
+                auto account = findAccountById(id);
+                if (account) {
+                    result.push_back(account);
+                }
+            } catch (...) {
+                return result;
             }
             return result;
         }
@@ -919,7 +923,7 @@ void customerMenu(Bank& bank, AuthService& auth) {
         case 6: {
             auto txs = bank.getTransactionsForAccount(accountId);
             if (txs.size() > MINI_STATEMENT_SIZE) {
-                txs.erase(txs.begin(), txs.end() - static_cast<std::ptrdiff_t>(MINI_STATEMENT_SIZE));
+                txs.erase(txs.begin(), txs.begin() + static_cast<std::ptrdiff_t>(txs.size() - MINI_STATEMENT_SIZE));
             }
             showTransactions(txs);
             break;
