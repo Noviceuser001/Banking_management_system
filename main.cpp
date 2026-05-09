@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -12,6 +13,7 @@
 #include <vector>
 
 namespace {
+constexpr std::size_t MINI_STATEMENT_SIZE = 5;
 
 std::string toLower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
@@ -401,7 +403,8 @@ class Bank {
         }
 
         if (!deposit(toAccount, amount, "Transfer from " + std::to_string(fromAccount), false)) {
-            deposit(fromAccount, amount, "Transfer rollback", false);
+            src->setBalance(src->getBalance() + amount);
+            addAudit("Transfer rollback applied for source account " + std::to_string(fromAccount));
             return false;
         }
 
@@ -603,13 +606,19 @@ class Bank {
         std::string line;
         if (std::getline(in, line)) {
             auto p = split(line);
-            if (p.size() == 6) {
+            if (p.size() != 6) {
+                addAudit("Invalid config format detected; defaults retained");
+                return;
+            }
+            try {
                 nextCustomerId_ = std::stoi(p[0]);
                 nextAccountId_ = std::stoi(p[1]);
                 nextTransactionId_ = std::stoi(p[2]);
                 nextAdminId_ = std::stoi(p[3]);
                 savingsInterestRate_ = std::stod(p[4]);
                 currentInterestRate_ = std::stod(p[5]);
+            } catch (...) {
+                addAudit("Malformed config values detected; defaults retained");
             }
         }
     }
@@ -627,14 +636,20 @@ class Bank {
         }
 
         std::string line;
+        int lineNo = 0;
         while (std::getline(in, line)) {
+            ++lineNo;
             const auto p = split(line);
             if (p.size() != 7) {
+                addAudit("Skipped malformed customer record at line " + std::to_string(lineNo));
                 continue;
             }
-
-            customers_.push_back(std::make_shared<Customer>(std::stoi(p[0]), p[1], p[2], p[3], std::stoi(p[4]), p[5],
-                                                            p[6] == "1"));
+            try {
+                customers_.push_back(std::make_shared<Customer>(std::stoi(p[0]), p[1], p[2], p[3], std::stoi(p[4]),
+                                                                p[5], p[6] == "1"));
+            } catch (...) {
+                addAudit("Skipped malformed customer record values at line " + std::to_string(lineNo));
+            }
         }
     }
 
@@ -654,22 +669,30 @@ class Bank {
         }
 
         std::string line;
+        int lineNo = 0;
         while (std::getline(in, line)) {
+            ++lineNo;
             const auto p = split(line);
             if (p.size() != 5) {
+                addAudit("Skipped malformed account record at line " + std::to_string(lineNo));
                 continue;
             }
+            try {
+                const std::string& type = p[0];
+                const int accountId = std::stoi(p[1]);
+                const int customerId = std::stoi(p[2]);
+                const double balance = std::stod(p[3]);
+                const bool frozen = p[4] == "1";
 
-            const std::string& type = p[0];
-            const int accountId = std::stoi(p[1]);
-            const int customerId = std::stoi(p[2]);
-            const double balance = std::stod(p[3]);
-            const bool frozen = p[4] == "1";
-
-            if (type == "Savings") {
-                accounts_.push_back(std::make_shared<SavingsAccount>(accountId, customerId, balance, frozen));
-            } else if (type == "Current") {
-                accounts_.push_back(std::make_shared<CurrentAccount>(accountId, customerId, balance, frozen));
+                if (type == "Savings") {
+                    accounts_.push_back(std::make_shared<SavingsAccount>(accountId, customerId, balance, frozen));
+                } else if (type == "Current") {
+                    accounts_.push_back(std::make_shared<CurrentAccount>(accountId, customerId, balance, frozen));
+                } else {
+                    addAudit("Skipped account record with unknown type at line " + std::to_string(lineNo));
+                }
+            } catch (...) {
+                addAudit("Skipped malformed account record values at line " + std::to_string(lineNo));
             }
         }
     }
@@ -689,12 +712,19 @@ class Bank {
         }
 
         std::string line;
+        int lineNo = 0;
         while (std::getline(in, line)) {
+            ++lineNo;
             const auto p = split(line);
             if (p.size() != 6) {
+                addAudit("Skipped malformed admin record at line " + std::to_string(lineNo));
                 continue;
             }
-            admins_.push_back(std::make_shared<Admin>(std::stoi(p[0]), p[1], p[2], p[3], p[4], p[5]));
+            try {
+                admins_.push_back(std::make_shared<Admin>(std::stoi(p[0]), p[1], p[2], p[3], p[4], p[5]));
+            } catch (...) {
+                addAudit("Skipped malformed admin record values at line " + std::to_string(lineNo));
+            }
         }
     }
 
@@ -714,13 +744,20 @@ class Bank {
         }
 
         std::string line;
+        int lineNo = 0;
         while (std::getline(in, line)) {
+            ++lineNo;
             const auto p = split(line);
             if (p.size() != 7) {
+                addAudit("Skipped malformed transaction record at line " + std::to_string(lineNo));
                 continue;
             }
-            transactions_.emplace_back(std::stoi(p[0]), p[1], p[2], std::stoi(p[3]), std::stoi(p[4]), std::stod(p[5]),
-                                       p[6]);
+            try {
+                transactions_.emplace_back(std::stoi(p[0]), p[1], p[2], std::stoi(p[3]), std::stoi(p[4]),
+                                           std::stod(p[5]), p[6]);
+            } catch (...) {
+                addAudit("Skipped malformed transaction record values at line " + std::to_string(lineNo));
+            }
         }
     }
 
@@ -881,8 +918,8 @@ void customerMenu(Bank& bank, AuthService& auth) {
             break;
         case 6: {
             auto txs = bank.getTransactionsForAccount(accountId);
-            if (txs.size() > 5) {
-                txs.erase(txs.begin(), txs.end() - 5);
+            if (txs.size() > MINI_STATEMENT_SIZE) {
+                txs.erase(txs.begin(), txs.end() - static_cast<std::ptrdiff_t>(MINI_STATEMENT_SIZE));
             }
             showTransactions(txs);
             break;
